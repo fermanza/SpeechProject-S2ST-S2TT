@@ -1,7 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Button, Container, Typography, CssBaseline, AppBar, Toolbar } from '@mui/material';
+import {
+    Button,
+    Container,
+    Typography,
+    CssBaseline,
+    AppBar,
+    Toolbar,
+    Paper,
+    Box,
+    Select,
+    MenuItem,
+    FormControl,
+    InputLabel,
+    TextField
+} from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
-import io from 'socket.io-client';
 
 const theme = createTheme({
     palette: {
@@ -14,11 +27,11 @@ const theme = createTheme({
 
 const getSupportedMimeType = () => {
     const possibleTypes = [
-        'audio/ogg; codecs=opus',
-        'audio/ogg',
         'audio/webm; codecs=opus',
         'audio/webm',
-        'audio/wav'
+        'audio/ogg; codecs=opus',
+        'audio/ogg',
+        'audio/wav',
     ];
 
     for (const mimeType of possibleTypes) {
@@ -26,154 +39,212 @@ const getSupportedMimeType = () => {
             return mimeType;
         }
     }
-
     return null;
 };
 
 const Translate = () => {
     const [recording, setRecording] = useState(false);
-    const [streaming, setStreaming] = useState(false);
     const [recognizedText, setRecognizedText] = useState('');
     const [translatedText, setTranslatedText] = useState('');
-    const [detectedLanguage, setDetectedLanguage] = useState(null);
-    const [targetLanguage, setTargetLanguage] = useState('Spanish');
+    const [detectedLanguage, setDetectedLanguage] = useState('');
+    const [translatedLanguage, setTranslatedLanguage] = useState('');
+    const [targetLanguage, setTargetLanguage] = useState('Spanish'); // Default target language
+    const [translationType, setTranslationType] = useState('speech-to-text'); // Default translation type
+    const [textToSpeechInput, setTextToSpeechInput] = useState('');
+    const [translatedAudioUrl, setTranslatedAudioUrl] = useState('');
     const mediaRecorderRef = useRef(null);
-    const TEMP_BUFFER = useRef(new Blob()); // Temporary buffer for gathered chunks
-
-    const cleanup = () => {
-        if (mediaRecorderRef.current) {
-            mediaRecorderRef.current.stop();
-            mediaRecorderRef.current = null;
-        }
-        TEMP_BUFFER.current = new Blob();
-        setRecording(false);
-        setStreaming(false);
-    };
+    const resetInProgress = useRef(false);
 
     useEffect(() => {
-        // Clean up the state on unmount
         return () => {
             cleanup();
         };
     }, []);
 
-    const uploadAudioChunk = async (audioBlob) => {
-        const formData = new FormData();
-        formData.append('audio_chunk', audioBlob, 'chunk.webm');
+    const isValidBlob = (blob) => {
+        if (blob.size === 0 || !blob.type.startsWith('audio/')) {
+            return false;
+        }
+        return true;
+    };
+
+    const cleanup = () => {
+        if (mediaRecorderRef.current) {
+            try {
+                mediaRecorderRef.current.stop();
+                mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+                mediaRecorderRef.current = null;
+            } catch (error) {
+                console.error("Error during cleanup:", error);
+            }
+        }
+        setRecording(false);
+    };
+
+    const calculateDuration = async (blob) => {
+        if (!isValidBlob(blob)) {
+            console.warn("Invalid audio blob:", blob);
+            return NaN;
+        }
+
+        const audioContextClass = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new audioContextClass();
+        const arrayBuffer = await blob.arrayBuffer();
+
+        if (arrayBuffer.byteLength === 0) {
+            console.warn("Array buffer is empty for blob:", blob);
+            return NaN;
+        }
 
         try {
-            const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/translate`, {
-                method: 'POST',
-                body: formData
-            });
-
-            const data = await response.json();
-
-            if (data.message === "Chunk received") {
-                console.info('Chunk received, continue recording...');
-                return;
-            }
-
-            if (data.recognized || data.translated || data.detectedLanguage) {
-                setRecognizedText((prev) => prev + ' ' + (data.recognized || ''));
-                setTranslatedText((prev) => prev + ' ' + (data.translated || ''));
-                if (data.detectedLanguage) {
-                    let language = data.detectedLanguage;
-                    let targetLang = 'Spanish'; // Default target language
-                    if (language === 'en') {
-                        language = 'English';
-                        targetLang = 'Spanish';
-                    } else if (language === 'es') {
-                        language = 'Spanish';
-                        targetLang = 'English';
-                    }
-                    setDetectedLanguage(language);
-                    setTargetLanguage(targetLang);
-                }
-            } else {
-                console.warn('Incomplete data received from the server', data);
-            }
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            return audioBuffer.duration;
         } catch (error) {
-            console.error('Error sending audio data:', error);
+            console.error("Error decoding audio data:", error.message);
+            return NaN;
+        } finally {
+            audioContext.close();
         }
     };
 
-    const startRecording = () => {
-        setRecognizedText('');
-        setTranslatedText('');
-        setDetectedLanguage(null);
+    const startRecording = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const mimeType = getSupportedMimeType();
+            if (!mimeType) {
+                stream.getTracks().forEach(track => track.stop());
+                return;
+            }
 
-        navigator.mediaDevices.getUserMedia({ audio: true })
-            .then((stream) => {
-                const mimeType = getSupportedMimeType();
-                if (!mimeType) {
-                    console.error('Your browser does not support the required audio format for recording.');
-                    return;
-                }
+            const mediaRecorder = new MediaRecorder(stream, { mimeType });
+            mediaRecorderRef.current = mediaRecorder;
 
-                const mediaRecorder = new MediaRecorder(stream, { mimeType });
-                mediaRecorderRef.current = mediaRecorder;
+            mediaRecorder.ondataavailable = async (event) => {
+                if (!resetInProgress.current && event.data.size > 0) {
+                    const duration = await calculateDuration(event.data);
+                    if (duration >= 4) {
+                        const chunkDetails = {
+                            url: URL.createObjectURL(event.data)
+                        };
 
-                mediaRecorder.ondataavailable = async (event) => {
-                    if (event.data.size > 0) {
-                        try {
-                            await uploadAudioChunk(event.data);
-                        } catch (error) {
-                            console.error('Error during audio chunk upload:', error);
-                        }
+                        // Send the chunk to backend for processing
+                        await sendChunkToBackend(event.data, chunkDetails);
                     } else {
-                        console.warn('Empty audio chunk received, skipping...');
+                        console.log(`Skipped chunk with duration of ${duration} seconds`);
                     }
-                };
+                }
+            };
 
-                mediaRecorder.start(1000); // Collect audio in 1-second chunks
-                setRecording(true);
-            }).catch((err) => {
-                console.error('Error accessing microphone:', err);
-            });
+            mediaRecorder.onstop = () => {
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.onerror = (event) => {
+                console.error("Error during recording:", event.error);
+                cleanup();
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start(10000);  // Collect audio in 10-second chunks
+            setRecording(true);
+        } catch (err) {
+            console.error("Error accessing microphone:", err);
+        }
+    };
+
+    const resetMicrophone = async () => {
+        resetInProgress.current = true;
+        cleanup();
+        await startRecording();
+        resetInProgress.current = false;
     };
 
     const stopRecording = () => {
+        resetInProgress.current = false;
         cleanup();
     };
 
-    const startStreaming = () => {
-        setRecognizedText('');
-        setTranslatedText('');
-        setDetectedLanguage(null);
+    const handleTextToSpeechSubmit = async () => {
+        const formData = new FormData();
+        formData.append('text', textToSpeechInput);
+        formData.append('target_language', targetLanguage);
+        formData.append('translation_type', 'text-to-speech');
 
-        navigator.mediaDevices.getUserMedia({ audio: true })
-            .then((stream) => {
-                const mimeType = getSupportedMimeType();
-                if (!mimeType) {
-                    console.error('Your browser does not support the required audio format for streaming.');
-                    return;
-                }
-
-                const mediaRecorder = new MediaRecorder(stream, { mimeType });
-                mediaRecorderRef.current = mediaRecorder;
-
-                mediaRecorder.ondataavailable = async (event) => {
-                    if (event.data.size > 0) {
-                        try {
-                            await uploadAudioChunk(event.data);
-                        } catch (error) {
-                            console.error('Error during audio chunk upload:', error);
-                        }
-                    } else {
-                        console.warn('Empty audio chunk received, skipping...');
-                    }
-                };
-
-                mediaRecorder.start(3000); // Collect audio in 3-second chunks
-                setStreaming(true);
-            }).catch((err) => {
-                console.error('Error accessing microphone:', err);
+        try {
+            const response = await fetch('http://localhost:5000/translate', {
+                method: 'POST',
+                body: formData,
             });
+
+            if (!response.ok) {
+                const errorResponse = await response.text();
+                console.error('Backend server error:', errorResponse);
+                throw new Error('Backend server error');
+            }
+
+            const result = await response.json();
+            setTranslatedText(result.translated);
+            const translatedAudioBlob = new Blob([result.translatedAudio], { type: 'audio/wav' });
+            const translatedAudioUrl = URL.createObjectURL(translatedAudioBlob);
+            setTranslatedAudioUrl(translatedAudioUrl);
+        } catch (error) {
+            console.error('Error sending text to backend:', error);
+        }
     };
 
-    const stopStreaming = () => {
-        cleanup();
+    const sendChunkToBackend = async (audioChunk, chunkDetails) => {
+        const formData = new FormData();
+        formData.append('audio_chunk', audioChunk, 'chunk.webm');  // Append the audio chunk
+        formData.append('target_language', targetLanguage); // Append the target language
+        formData.append('translation_type', translationType); // Append the translation type
+
+        try {
+            const response = await fetch('http://localhost:5000/translate', {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) {
+                const errorResponse = await response.text();  // Use text(), not json(), to better log the exact error
+                console.error('Backend server error:', errorResponse);
+                throw new Error('Backend server error');
+            }
+
+            const result = await response.json();
+
+            // Handle the responses based on translation type
+            if (translationType === 'speech-to-text' || translationType === 'speech-to-speech') {
+                // Append the new recognized text and translated text to the existing state variables
+                setRecognizedText(prevText => prevText + result.recognized + " ");
+                setTranslatedText(prevText => prevText + result.translated + " ");
+            }
+
+            if (translationType === 'speech-to-speech') {
+                // Play the translated speech
+                const translatedAudioBlob = new Blob([result.translatedAudio], { type: 'audio/wav' });
+                const translatedAudioUrl = URL.createObjectURL(translatedAudioBlob);
+                const audio = new Audio(translatedAudioUrl);
+                audio.play();
+            }
+
+            // Set detected language based on detected language
+            const lang = result.language;
+            if (lang === 'es') {
+                setDetectedLanguage('Spanish');
+            } else {
+                setDetectedLanguage('English');
+            }
+            // Set translated language based on detected language
+            if (lang === 'es') {
+                setTranslatedLanguage('English');
+            } else {
+                setTranslatedLanguage('Spanish');
+            }
+        } catch (error) {
+            console.error('Error sending chunk to backend:', error);
+        } finally {
+            await resetMicrophone();
+        }
     };
 
     return (
@@ -181,46 +252,94 @@ const Translate = () => {
             <CssBaseline />
             <AppBar position='static'>
                 <Toolbar>
-                    <Typography variant='h6'>Audio Translator</Typography>
+                    <Typography variant='h6'>Audio Chunks Translator</Typography>
                 </Toolbar>
             </AppBar>
             <Container maxWidth='sm' style={{ textAlign: 'center', marginTop: '20px' }}>
                 <Typography variant='h4' gutterBottom>
-                    Audio Translation
+                    Translate Audio Chunks
                 </Typography>
-                <Button
-                    variant='contained'
-                    color='primary'
-                    onClick={recording ? stopRecording : startRecording}
-                    style={{ margin: '0 10px' }}
-                    disabled={streaming}
-                >
-                    {recording ? 'Stop Recording' : 'Start Recording'}
-                </Button>
-                <Button
-                    variant='contained'
-                    color='secondary'
-                    onClick={streaming ? stopStreaming : startStreaming}
-                    style={{ margin: '0 10px' }}
-                    disabled={recording}
-                >
-                    {streaming ? 'Stop Streaming' : 'Start Streaming'}
-                </Button>
-                {recognizedText && (
-                    <Typography variant='body1' style={{ marginTop: '20px' }}>
-                        Recognized Text: {recognizedText}
-                    </Typography>
+                <FormControl variant="outlined" style={{ minWidth: 200, marginBottom: '20px' }}>
+                    <InputLabel id="target-language-label">Target Language</InputLabel>
+                    <Select
+                        labelId="target-language-label"
+                        value={targetLanguage}
+                        onChange={(e) => setTargetLanguage(e.target.value)}
+                        label="Target Language"
+                    >
+                        <MenuItem value="Spanish">Spanish</MenuItem>
+                        <MenuItem value="English">English</MenuItem>
+                    </Select>
+                </FormControl>
+                <FormControl variant="outlined" style={{ minWidth: 200, marginBottom: '20px' }}>
+                    <InputLabel id="translation-type-label">Translation Type</InputLabel>
+                    <Select
+                        labelId="translation-type-label"
+                        value={translationType}
+                        onChange={(e) => setTranslationType(e.target.value)}
+                        label="Translation Type"
+                    >
+                        <MenuItem value="speech-to-text">Speech to Text</MenuItem>
+                        <MenuItem value="text-to-speech">Text to Speech</MenuItem>
+                        <MenuItem value="speech-to-speech">Speech to Speech</MenuItem>
+                    </Select>
+                </FormControl>
+                {translationType === 'text-to-speech' && (
+                    <Box component={Paper} style={{ marginTop: '20px', padding: '20px', textAlign: 'left' }}>
+                        <TextField
+                            label="Enter Text"
+                            multiline
+                            rows={4}
+                            variant="outlined"
+                            fullWidth
+                            value={textToSpeechInput}
+                            onChange={(e) => setTextToSpeechInput(e.target.value)}
+                        />
+                        <Button
+                            variant='contained'
+                            color='primary'
+                            onClick={handleTextToSpeechSubmit}
+                            style={{ marginTop: '10px' }}
+                        >
+                            Convert to Speech
+                        </Button>
+                        {translatedAudioUrl && (
+                            <Box style={{ marginTop: '20px' }}>
+                                <audio controls src={translatedAudioUrl}></audio>
+                            </Box>
+                        )}
+                    </Box>
                 )}
-                {translatedText && (
-                    <Typography variant='body1' style={{ marginTop: '20px' }}>
-                        Translated Text: {translatedText}
-                    </Typography>
+                {translationType !== 'text-to-speech' && (
+                    <Button
+                        variant='contained'
+                        color='primary'
+                        onClick={recording ? stopRecording : startRecording}
+                        style={{ margin: '0 10px' }}
+                    >
+                        {recording ? 'Stop Streaming' : 'Start Streaming'}
+                    </Button>
                 )}
-                {detectedLanguage && translatedText && (
-                    <Typography variant='body2' color='textSecondary' style={{ marginTop: '20px' }}>
-                        {`Detected Language: ${detectedLanguage}. Translating to ${targetLanguage}.`}
-                    </Typography>
-                )}
+                <Box component={Paper} style={{ marginTop: '20px', padding: '20px', width: '1000px', marginLeft: '-250px', textAlign: 'left' }}>
+                    <Typography variant='h5'>Translation Results</Typography>
+                    <br />
+                    {translationType !== 'text-to-speech' && (
+                        <>
+                            <Typography variant='body1'>
+                                <strong>Recognized Text:</strong> {recognizedText}
+                            </Typography>
+                            <Typography variant='body1'>
+                                <strong>Translated Text:</strong> {translatedText}
+                            </Typography>
+                            <Typography variant='body1'>
+                                <strong>Detected Language:</strong> {detectedLanguage}
+                            </Typography>
+                            <Typography variant='body1'>
+                                <strong>Translated Language:</strong> {translatedLanguage}
+                            </Typography>
+                        </>
+                    )}
+                </Box>
             </Container>
         </ThemeProvider>
     );
