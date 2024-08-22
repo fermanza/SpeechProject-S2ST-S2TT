@@ -1,27 +1,32 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit, disconnect
+from flask_socketio import SocketIO
 import speech_recognition as sr
-from io import BytesIO
 import googletrans
 import logging
-from gtts import gTTS
 from pydub import AudioSegment
 import os
 import uuid
 import pyttsx3
+import torch
+from seamless_communication.models.inference import Translator as SeamlessTranslator
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 recognizer = sr.Recognizer()
-translator = googletrans.Translator()
+google_translator = googletrans.Translator()
+# Initialize Seamless Translator
+seamless_translator = SeamlessTranslator(
+    "seamlessM4T_large",
+    "vocoder_36langs",
+    torch.device("cuda:0")
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
-# Temporary directories for .webm and .wav files
 WEBM_DIR = "./temp_webm"
 WAV_DIR = "./temp_wav"
 SPEECH_DIR = "./temp_speech"
@@ -33,74 +38,6 @@ os.makedirs(SPEECH_DIR, exist_ok=True)
 
 BUFFER_THRESHOLD = 100000  # Example threshold for collected chunks
 
-TEMP_BUFFER = BytesIO()
-
-
-def text_to_speech(text, language, filename):
-    language_map = {
-        'English': 'en',
-        'Spanish': 'es'
-    }
-
-    if language not in language_map:
-        raise ValueError(f"Language not supported: {language}")
-
-    language_code = language_map[language]
-    engine = pyttsx3.init()
-
-    # Set the language for the synthesis
-    voices = engine.getProperty('voices')
-    for voice in voices:
-        if language_code in voice.languages:
-            engine.setProperty('voice', voice.id)
-            break
-    else:
-        raise ValueError(f"Language not supported: {language}")
-
-    engine.save_to_file(text, filename)
-    engine.runAndWait()
-    return filename
-
-
-def save_chunk_to_file(chunk_data):
-    """ Save the received audio chunk to a file """
-    app.logger.info("Saving chunk to file")
-    try:
-        file_path = os.path.join(WEBM_DIR, "chunk.webm")
-        with open(file_path, "ab") as f:
-            f.write(chunk_data)
-        app.logger.info(f"Chunk saved to {file_path}")
-        return file_path
-    except Exception as e:
-        app.logger.error(f"Error saving chunk to file: {e}")
-        raise
-
-
-def convert_webm_to_wav(webm_path):
-    try:
-        app.logger.info(f"Converting {webm_path} to WAV")
-        wav_path = os.path.join(WAV_DIR, "chunk.wav")
-        audio = AudioSegment.from_file(webm_path, format="webm")
-        audio.export(wav_path, format="wav")
-        app.logger.info(f"Converted {webm_path} to {wav_path}")
-        return wav_path
-    except Exception as e:
-        app.logger.error(f"Error during conversion: {str(e)}")
-        raise
-
-
-def text_to_speech(text, lang, filename):
-    """ Converts text to speech using gTTS """
-    try:
-        tts = gTTS(text=text, lang=lang)
-        file_path = os.path.join(SPEECH_DIR, filename)
-        tts.save(file_path)
-        return file_path
-    except Exception as e:
-        app.logger.error(f"Error during text-to-speech conversion: {str(e)}")
-        raise
-
-
 @app.route("/translate", methods=["POST"])
 def translate():
     try:
@@ -111,28 +48,24 @@ def translate():
         translation_type = request.form.get("translation_type")
 
         if not target_language:
-            app.logger.error("Request missing target language")
             return jsonify({"error": "Target language missing"}), 400
 
         if not translation_type:
-            app.logger.error("Request missing translation type")
             return jsonify({"error": "Translation type missing"}), 400
 
         if translation_type == 'text-to-speech':
             if not text:
-                app.logger.error("Request missing text for text-to-speech")
                 return jsonify({"error": "Text missing for text-to-speech"}), 400
 
-            detected_lang = translator.detect(text).lang
-            translated = translator.translate(text, src=detected_lang, dest=target_language)
+            detected_lang = google_translator.detect(text).lang
+            translated = google_translator.translate(text, src=detected_lang, dest=target_language)
             translated_text = translated.text
 
             speech_filename = f"{uuid.uuid4()}.wav"
-            speech_path = text_to_speech(translated_text, target_language, speech_filename)
+            speech_path = text_to_speech_google(translated_text, target_language, speech_filename)
             with open(speech_path, "rb") as speech_file:
                 translated_audio = speech_file.read()
 
-            # Clean up speech file after sending
             os.remove(speech_path)
 
             return jsonify({
@@ -140,130 +73,90 @@ def translate():
                 "translatedAudio": translated_audio,
                 "language": detected_lang
             }), 200
-        else:
+
+        elif translation_type == 'text-to-text':
+            if not text:
+                return jsonify({"error": "Text missing for text-to-text"}), 400
+
+            detected_lang = google_translator.detect(text).lang
+            translated = google_translator.translate(text, src=detected_lang, dest=target_language)
+            translated_text = translated.text
+
+            return jsonify({
+                "translated": translated_text,
+                "language": detected_lang
+            }), 200
+
+        elif translation_type == 'speech-to-text' or translation_type == 'speech-to-speech':
             if not audio_chunk:
-                app.logger.error("Request missing audio chunk")
                 return jsonify({"error": "Audio chunk missing"}), 400
 
             webm_path = save_chunk_to_file(audio_chunk.read())
-
             chunk_size = os.path.getsize(webm_path)
-            app.logger.info(f"Current chunk size: {chunk_size} bytes")
 
             if chunk_size < BUFFER_THRESHOLD:
-                app.logger.info("Chunk size below threshold, waiting for more data")
                 return jsonify({"message": "Chunk received, waiting for more data"}), 200
 
             wav_path = convert_webm_to_wav(webm_path)
 
-            app.logger.info(f"Processing WAV file {wav_path}")
+            recognized_text, _, _ = seamless_translator.predict(wav_path, "s2tt", 'eng')
+            os.remove(webm_path)
+            os.remove(wav_path)
 
-            with sr.AudioFile(wav_path) as source:
-                audio_data = recognizer.record(source)
-                app.logger.info("Audio data recorded")
-                text = recognizer.recognize_google(audio_data)
-                app.logger.info(f"Recognized text: {text}")
+            if translation_type == 'speech-to-speech':
+                translated_text, _, translated_audio = seamless_translator.predict(recognized_text, "t2st", target_language)
 
-                detected_lang = translator.detect(text).lang
-                app.logger.info(f"Detected language: {detected_lang}")
-                if detected_lang is None:
-                    app.logger.error("Detected language is none")
-                    raise ValueError("Detected language is none")
+                audio_path = os.path.join(SPEECH_DIR, f"{uuid.uuid4()}.wav")
+                translated_audio.save(audio_path)
+                with open(audio_path, "rb") as audio_file:
+                    translated_audio_data = audio_file.read()
 
-                translated = translator.translate(text, src=detected_lang, dest=target_language)
-                if translated is None or not translated:
-                    raise ValueError("Translation result is none or empty")
+                os.remove(audio_path)
 
-                translated_text = translated.text
-                app.logger.info(f"Translated text: {translated_text}")
+                return jsonify({
+                    "recognized": recognized_text,
+                    "translated": translated_text,
+                    "translatedAudio": translated_audio_data,
+                    "language": target_language
+                }), 200
 
-                result = {"recognized": text, "translated": translated_text, "language": detected_lang}
+            else:  # 'speech-to-text'
+                translated_text, _, _ = seamless_translator.predict(recognized_text, "t2tt", target_language)
 
-                if translation_type == 'speech-to-speech':
-                    speech_filename = f"{uuid.uuid4()}.wav"
-                    speech_path = text_to_speech(translated_text, target_language, speech_filename)
-                    with open(speech_path, "rb") as speech_file:
-                        result["translatedAudio"] = speech_file.read()
-
-                    # Clean up speech file after sending
-                    os.remove(speech_path)
-
-                # Clean up files after use
-                os.remove(webm_path)
-                os.remove(wav_path)
-
-                return jsonify(result), 200
+                return jsonify({
+                    "recognized": recognized_text,
+                    "translated": translated_text,
+                    "language": target_language
+                }), 200
 
     except sr.UnknownValueError:
-        app.logger.error("Could not understand audio")
         return jsonify({"error": "Could not understand audio"}), 400
     except sr.RequestError as e:
-        app.logger.error(f"Could not request results; {e}")
         return jsonify({"error": f"Could not request results; {e}"}), 500
     except Exception as e:
         app.logger.error(f"Exception: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
-@socketio.on('audio_chunk')
-def handle_audio_chunk(data):
-    global TEMP_BUFFER
+def save_chunk_to_file(chunk_data):
+    file_path = os.path.join(WEBM_DIR, f"chunk_{uuid.uuid4()}.webm")
+    with open(file_path, "wb") as f:
+        f.write(chunk_data)
+    return file_path
 
-    try:
-        app.logger.info("Received audio chunk.")
-        if not data:
-            app.logger.error("No audio data received")
-            return
 
-        audio_chunk = BytesIO(data)
-        app.logger.info(f"Audio chunk size: {audio_chunk.getbuffer().nbytes} bytes")
-        TEMP_BUFFER.write(audio_chunk.read())
+def convert_webm_to_wav(webm_path):
+    wav_path = os.path.join(WAV_DIR, f"chunk_{uuid.uuid4()}.wav")
+    audio = AudioSegment.from_file(webm_path, format="webm")
+    audio.export(wav_path, format="wav")
+    return wav_path
 
-        audio_buffer_size = TEMP_BUFFER.getbuffer().nbytes
-        if audio_buffer_size < BUFFER_THRESHOLD:
-            return
 
-        TEMP_BUFFER.seek(0)
-        audio_wav_bytes = None
-        try:
-            audio_wav_bytes = convert_webm_to_wav(TEMP_BUFFER)
-        except Exception as e:
-            app.logger.error(f"Could not convert WebM to WAV: {e}")
-            emit('error', {'message': f"Could not convert WebM to WAV: {str(e)}"})
-            disconnect()
-            return
-
-        TEMP_BUFFER = BytesIO()
-
-        with sr.AudioFile(audio_wav_bytes) as source:
-            audio_data = recognizer.record(source)
-            app.logger.info("Recorded audio from AudioSegment")
-            text = recognizer.recognize_google(audio_data)
-            app.logger.info(f"Recognized text: {text}")
-
-            detected_lang = translator.detect(text).lang
-            if not detected_lang:
-                raise ValueError("Detected language is none")
-
-            target_lang = 'es' if detected_lang == 'en' else 'en'
-            translated = translator.translate(text, src=detected_lang, dest=target_lang)
-            if translated is None or not translated:
-                raise ValueError("Translation result is none or empty")
-
-            translated_text = translated.text
-            app.logger.info(f"Translated text: {translated_text}")
-
-            emit('translation', {'translated': translated_text, 'detectedLanguage': detected_lang})
-    except sr.UnknownValueError:
-        app.logger.error("Speech Recognition could not understand audio")
-        emit('error', {'message': "Could not understand audio"})
-    except sr.RequestError as e:
-        app.logger.error(f"Could not request results from Speech Recognition service; {e}")
-        emit('error', {'message': "Error with Speech Recognition service"})
-    except Exception as e:
-        app.logger.error(f"Real-time translation error: {str(e)}")
-        emit('error', {'message': f"Real-time translation error: {str(e)}"})
-        disconnect()
+def text_to_speech_google(text, language, filename):
+    gtts = gTTS(text=text, lang=language)
+    file_path = os.path.join(SPEECH_DIR, filename)
+    gtts.save(file_path)
+    return file_path
 
 
 if __name__ == "__main__":

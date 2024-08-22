@@ -1,20 +1,43 @@
-# Dockerfile for backend
-FROM python:3.9-slim
+FROM python:3.10-slim
 
-# Install necessary dependencies
+# Install necessary OS-level dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     flac \
-    && rm -rf /var/lib/apt/lists/*
+    git \
+    pkg-config \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libavdevice-dev \
+    libavfilter-dev \
+    libsdl2-dev \
+    libva-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
 WORKDIR /app
 
-# Copy the requirements file and install dependencies
+# Install pip and update it to the latest version
+RUN python -m pip install --upgrade pip setuptools
+
+# Install a known compatible version of Cython
+RUN pip install cython==0.29.36
+
+# Copy requirements file
 COPY requirements.txt .
+
+# Install primary dependencies
 RUN pip install -r requirements.txt
 
-# Copy the application source code
+# Attempt installing fairseq package
+RUN pip install fairseq==0.10.2
+
+# Copy and install seamless_communication package
+COPY seamless_communication ./seamless_communication
+RUN pip install ./seamless_communication
+
+# Copy the rest of the application source code
 COPY . .
 
 # Expose the port the app runs on

@@ -1,4 +1,3 @@
-# Example requirements.txt
 Flask==2.1.3
 Flask-Cors==3.0.10
 requests==2.27.1
@@ -10,16 +9,25 @@ python-socketio==5.3.0
 gunicorn==20.0.4
 werkzeug==2.1.2
 dnspython==1.16.0
-av==10.0.0
+av==9.2.0  # Changed to a version more likely to have pre-built binary
 pydub
 gtts
 pyttsx3
-# seamless_communicationm4t
+yt-dlp
+pre-commit
+datasets
+torchaudio
+soundfile
+librosa
 
-# setuptools
-# pyaudio
-# --extra-index-url https://download.pytorch.org/whl/cu116
-# torch
-# numpy
-# Add whisper_real_time from GitHub
-# git+https://github.com/username/whisper_real_time.git
+
+
+
+
+
+
+
+
+
+
+
