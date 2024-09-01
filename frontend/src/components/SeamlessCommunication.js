@@ -55,6 +55,7 @@ const SeamlessCommunication = () => {
   const [conversations, setConversations] = useState([]);
   const [currentSpeaker, setCurrentSpeaker] = useState(1);
   const mediaRecorderRef = useRef(null);
+  const audioContextRef = useRef(null);
   const resetInProgress = useRef(false);
   const audioElementRef = useRef(null);
   const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:5500'; // Fallback to localhost:5500 if not set
@@ -62,7 +63,6 @@ const SeamlessCommunication = () => {
   const silenceThreshold = 0.05; // Define what to consider as silence (adjust as needed)
   const initialCaptureDelay = 2000; // Initial delay of 2 seconds before starting capture
 
-  const sessionId = useRef(generateSessionId()).current;
   const audioChunksRef = useRef([]);
   const silenceTimerRef = useRef(null);
   const analyserRef = useRef(null);
@@ -70,7 +70,6 @@ const SeamlessCommunication = () => {
   const voiceDetectedRef = useRef(false); // Flag to track voice detection
 
   useEffect(() => {
-    // Adding a delay before the microphone starts capturing voice
     const timer = setTimeout(() => {
       startRecordingStream();
     }, initialCaptureDelay);
@@ -90,20 +89,38 @@ const SeamlessCommunication = () => {
   };
 
   const cleanup = () => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-    }
-    if (mediaRecorderRef.current) {
-      try {
-        mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-        mediaRecorderRef.current = null;
-      } catch (error) {
-        console.error('Error during cleanup:', error);
+    try {
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
       }
+
+      if (analyserRef.current) {
+        analyserRef.current.disconnect();
+        analyserRef.current = null;
+      }
+
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.ondataavailable = null; // Remove handlers
+        if (mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+        if (mediaRecorderRef.current.stream) {
+          mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+        }
+        mediaRecorderRef.current = null;
+      }
+
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+
+      setRecording(false);
+      audioChunksRef.current = [];
+    } catch (error) {
+      console.error('Error during cleanup:', error);
     }
-    setRecording(false);
-    audioChunksRef.current = [];
   };
 
   const resetVariables = () => {
@@ -126,6 +143,7 @@ const SeamlessCommunication = () => {
       console.log('Using mimeType:', mimeType);
 
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      audioContextRef.current = audioContext;
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 2048;
@@ -148,7 +166,9 @@ const SeamlessCommunication = () => {
 
       mediaRecorder.onstop = () => {
         console.log('MediaRecorder stopped.');
-        stream.getTracks().forEach((track) => track.stop());
+        if (mediaRecorder.stream) {
+          mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+        }
       };
 
       mediaRecorder.onerror = (event) => {
@@ -173,7 +193,6 @@ const SeamlessCommunication = () => {
 
       if (average / 128 > silenceThreshold) {
         voiceDetectedRef.current = true;
-        // console.log('Voice detected');
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
         }
@@ -181,7 +200,6 @@ const SeamlessCommunication = () => {
       } else {
         if (!silenceDetectedRef.current && voiceDetectedRef.current) {
           silenceDetectedRef.current = true;
-          // console.log('Silence detected, starting timer');
           silenceTimerRef.current = setTimeout(async () => {
             silenceDetectedRef.current = false;
             voiceDetectedRef.current = false;
@@ -208,7 +226,6 @@ const SeamlessCommunication = () => {
     console.log('Blob size:', audioBlob.size);
     console.log('Blob type:', audioBlob.type);
 
-    // Clear chunks after they're included in the blob
     audioChunksRef.current = [];
 
     if (!isValidBlob(audioBlob)) {
@@ -217,13 +234,11 @@ const SeamlessCommunication = () => {
       return;
     }
 
-    console.log('Sending audio to backend');
-
     const formData = new FormData();
-    formData.append('audio_chunk', audioBlob, 'audio.webm'); // Append the audio blob
-    formData.append('target_language', 'en'); // Fixed target language to English for simplicity
-    formData.append('translation_type', 's2st'); // Append the translation type
-    formData.append('session_id', sessionId);
+    formData.append('audio_chunk', audioBlob, 'audio.webm');
+    formData.append('target_language', 'en');
+    formData.append('translation_type', 's2st');
+    formData.append('session_id', generateSessionId()); // Generate a new session ID here
 
     try {
       const response = await fetch(`${backendUrl}/translate`, {
@@ -233,14 +248,11 @@ const SeamlessCommunication = () => {
 
       if (!response.ok) {
         throw new Error('Backend server error');
-        resetVariables();
       }
-
-      console.log('Response from backend:', response);
 
       const result = await response.json();
 
-      resetVariables(); // Reset variables after successful response
+      resetVariables();
 
       setConversations((prevConversations) => [
         ...prevConversations,
@@ -254,30 +266,33 @@ const SeamlessCommunication = () => {
         }
       ]);
 
-      // Toggle speaker for next turn
       setCurrentSpeaker((prevSpeaker) => (prevSpeaker === 1 ? 2 : 1));
 
-      // Auto-play the translated audio
       if (audioElementRef.current) {
         audioElementRef.current.src = generateUniqueUrl(result.audio_url || '');
         audioElementRef.current.play();
       }
+
+      cleanup(); // Clean up resources before playing audio
+
+      // Event listener to start recording again after playback
+      audioElementRef.current.onended = async () => {
+        await startRecordingStream();
+      };
+
     } catch (error) {
       console.error('Error sending audio to backend:', error);
-      resetVariables(); // Reset variables in case of an error
-    } finally {
-      setTimeout(async () => {
-        await startRecordingStream();
-      }, 200);
+      resetVariables();
+      await startRecordingStream(); // Restart recording in case of error
     }
   };
 
   const resumeRecordingSession = async () => {
     console.log('Resuming recording session after error...');
-    resetVariables(); // Reset variables when resuming
+    resetVariables();
     setTimeout(async () => {
       await startRecordingStream();
-    }, 200);
+    }, 1000);
   };
 
   return (
@@ -299,7 +314,7 @@ const SeamlessCommunication = () => {
             style={{
               marginTop: '20px',
               padding: '20px',
-              textAlign: conv.speaker === 1 ? 'left' : 'right'
+              textAlign: conv.speaker === 1 ? 'left' : 'right',
             }}
           >
             <Typography variant="h5">Translation Results</Typography>
@@ -324,11 +339,9 @@ const SeamlessCommunication = () => {
                 style={{
                   marginTop: '20px',
                   textAlign: 'center',
-                  pointerEvents: conv.audioUrl ? 'auto' : 'none',
-                  opacity: conv.audioUrl ? 1 : 0.5,
                 }}
               >
-                <audio controls>
+                <audio ref={audioElementRef} controls>
                   <source src={conv.audioUrl} type="audio/wav" />
                 </audio>
               </Box>
