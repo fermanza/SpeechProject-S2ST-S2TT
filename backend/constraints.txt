@@ -1,7 +1,0 @@
-openai-whisper
-librosa
-numpy
-scipy
-soundfile
-torchaudio
-tqdm

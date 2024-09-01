@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useState, useRef, useEffect } from 'react';
+import {useState, useRef, useEffect} from 'react';
 import {
     Button,
     Container,
@@ -19,9 +19,10 @@ import {
     FormControlLabel,
     FormLabel,
 } from '@mui/material';
-import { ThemeProvider, createTheme } from '@mui/material/styles';
+import {ThemeProvider, createTheme} from '@mui/material/styles';
 import AudioPlayer from './AudioPlayer';
 
+// Theme definition
 const theme = createTheme({
     palette: {
         mode: 'light',
@@ -31,6 +32,17 @@ const theme = createTheme({
     },
 });
 
+// Static language mapping
+const languageMapping = {
+    en: 'English',
+    es: 'Spanish',
+    // Add other mappings as needed
+};
+
+// Function to get full language name
+const getFullLanguageName = (code) => languageMapping[code] || code;
+
+// Function to get supported MIME type
 const getSupportedMimeType = () => {
     const possibleTypes = [
         'audio/webm; codecs=opus',
@@ -48,6 +60,13 @@ const getSupportedMimeType = () => {
     return null;
 };
 
+// Function to generate session ID
+const generateSessionId = () => 'session-' + Date.now();
+
+// Function to generate a unique URL
+const generateUniqueUrl = (baseUrl) => `${baseUrl}?t=${new Date().getTime()}`;
+
+// Main Translate component
 const Translate = () => {
     const [recording, setRecording] = useState(false);
     const [recognizedText, setRecognizedText] = useState('');
@@ -55,20 +74,23 @@ const Translate = () => {
     const [detectedLanguage, setDetectedLanguage] = useState('');
     const [translatedLanguage, setTranslatedLanguage] = useState('');
     const [targetLanguage, setTargetLanguage] = useState('Spanish'); // Default target language
-    const [translationType, setTranslationType] = useState('speech-to-text'); // Default translation type
+    const [translationType, setTranslationType] = useState('s2tt'); // Default translation type
     const [textToTranslateInput, setTextToTranslateInput] = useState('');
     const [translatedAudioUrl, setTranslatedAudioUrl] = useState('');
     const [audioSource, setAudioSource] = useState('file'); // Default audio source
     const mediaRecorderRef = useRef(null);
     const resetInProgress = useRef(false);
     const audioPlayerRef = useRef(null);
+    const backendUrl = process.env.REACT_APP_BACKEND_URL;
+
+    // Generate or obtain your sessionId here
+    const sessionId = useRef(generateSessionId()).current; // Generate session ID once and keep it stable
 
     useEffect(() => {
-        return () => {
-            cleanup();
-        };
+        return () => cleanup();
     }, []);
 
+    // Function to check if the blob is valid
     const isValidBlob = (blob) => {
         if (blob.size === 0 || !blob.type.startsWith('audio/')) {
             return false;
@@ -76,6 +98,7 @@ const Translate = () => {
         return true;
     };
 
+    // Cleanup function
     const cleanup = () => {
         if (mediaRecorderRef.current) {
             try {
@@ -89,6 +112,7 @@ const Translate = () => {
         setRecording(false);
     };
 
+    // Function to calculate the duration of an audio blob
     const calculateDuration = async (blob) => {
         if (!isValidBlob(blob)) {
             console.warn('Invalid audio blob:', blob);
@@ -115,16 +139,17 @@ const Translate = () => {
         }
     };
 
+    // Function to start recording audio
     const startRecording = async () => {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({audio: true});
             const mimeType = getSupportedMimeType();
             if (!mimeType) {
                 stream.getTracks().forEach((track) => track.stop());
                 return;
             }
 
-            const mediaRecorder = new MediaRecorder(stream, { mimeType });
+            const mediaRecorder = new MediaRecorder(stream, {mimeType});
             mediaRecorderRef.current = mediaRecorder;
 
             mediaRecorder.ondataavailable = async (event) => {
@@ -160,6 +185,7 @@ const Translate = () => {
         }
     };
 
+    // Function to reset the microphone
     const resetMicrophone = async () => {
         resetInProgress.current = true;
         cleanup();
@@ -167,19 +193,41 @@ const Translate = () => {
         resetInProgress.current = false;
     };
 
+    // Function to stop recording audio
     const stopRecording = () => {
         resetInProgress.current = false;
         cleanup();
     };
 
+    // Function to handle translation type change
+    const handleChange = (event) => {
+        const {value} = event.target;
+        if (['s2tt', 's2st', 't2tt', 't2st'].includes(value)) {
+            setTranslationType(value);
+
+            // Reset the relevant state variables
+            setRecognizedText('');
+            setTranslatedText('');
+            setDetectedLanguage('');
+            setTranslatedLanguage('');
+            setTranslatedAudioUrl('');
+        } else {
+            console.error(`Invalid translation type: ${value}`);
+            setTranslationType(''); // or set a default value
+        }
+    };
+
+    // Function to handle text translation submit
     const handleTextToTranslateSubmit = async () => {
         const formData = new FormData();
-        formData.append('text', textToTranslateInput);
-        formData.append('target_language', targetLanguage);
-        formData.append('translation_type', translationType); // Ensure this field is set correctly
+        formData.append('text', textToTranslateInput); // Append text to translate
+        formData.append('target_language', targetLanguage); // Append the target language
+        formData.append('translation_type', translationType); // Append translation type (t2tt, t2st, etc.)
+        formData.append('input_language', detectedLanguage); // Append input language
+        formData.append('session_id', sessionId); // Append session ID
 
         try {
-            const response = await fetch('http://localhost:5000/translate', {
+            const response = await fetch(`${backendUrl}/translate`, {
                 method: 'POST',
                 body: formData,
             });
@@ -192,77 +240,111 @@ const Translate = () => {
 
             const result = await response.json();
 
-            if (translationType === 'text-to-speech') {
-                const translatedAudioBlob = new Blob([result.translatedAudio], { type: 'audio/wav' });
-                const translatedAudioUrl = URL.createObjectURL(translatedAudioBlob);
-                setTranslatedAudioUrl(translatedAudioUrl);
-            } else if (translationType === 'text-to-text') {
-                setTranslatedText(result.translated);
+            if (translationType === 't2st' || translationType === 's2st') {
+                setTranslatedText(result.translated); // Set the translated text
+                const audioUrl = generateUniqueUrl(`${backendUrl}${result.audio_url}`); // Construct the audio file URL
+                setTranslatedAudioUrl(audioUrl); // Set the audio URL for playback
+            } else if (translationType === 't2tt') {
+                setTranslatedText(result.translated); // Set the translated text for text-to-text translation
             }
+
+            // Set detected and translated languages
+            setDetectedLanguage(result.detected_language || ''); // Assuming detected_language is in the response
+            setTranslatedLanguage(result.translated_language || targetLanguage); // Use response or target language
         } catch (error) {
             console.error('Error sending text to backend:', error);
         }
     };
 
-    const sendChunkToBackend = async (audioChunk, chunkDetails) => {
+    // Function to send audio chunk to the backend
+    const sendAudioToBackend = async () => {
+        if (audioChunksRef.current.length === 0) {
+            console.error("No audio chunks to send.");
+            resumeRecordingSession();
+            return;
+        }
+
+        const audioBlob = new Blob(audioChunksRef.current, {type: 'audio/webm'});
+        console.log('Blob size:', audioBlob.size);
+        console.log('Blob type:', audioBlob.type);
+
+        // Clear chunks after they're included in the blob
+        audioChunksRef.current = [];
+
+        if (!isValidBlob(audioBlob)) {
+            console.error('Invalid audio blob:', audioBlob);
+            resumeRecordingSession();
+            return;
+        }
+
+        console.log('Sending audio to backend');
+
         const formData = new FormData();
-        formData.append('audio_chunk', audioChunk, 'chunk.webm'); // Append the audio chunk
-        formData.append('target_language', targetLanguage); // Append the target language
-        formData.append('translation_type', translationType); // Append the translation type
+        formData.append('audio_chunk', audioBlob, 'audio.webm'); // Append the audio blob
+        // formData.append('target_language', 'en'); // Removed target language parameter
+        formData.append('translation_type', 's2st'); // Append the translation type
+        formData.append('session_id', sessionId);
 
         try {
-            const response = await fetch('http://localhost:5000/translate', {
+            const response = await fetch(`${backendUrl}/translate`, {
                 method: 'POST',
                 body: formData,
             });
 
             if (!response.ok) {
-                const errorResponse = await response.text(); // Use text(), not json(), to better log the exact error
-                console.error('Backend server error:', errorResponse);
                 throw new Error('Backend server error');
+                resetVariables();
             }
+
+            console.log('Response from backend:', response);
 
             const result = await response.json();
 
-            // Handle the responses based on translation type
-            if (translationType === 'speech-to-text' || translationType === 'speech-to-speech') {
-                // Append the new recognized text and translated text to the existing state variables
-                setRecognizedText((prevText) => prevText + result.recognized + ' ');
-                setTranslatedText((prevText) => prevText + result.translated + ' ');
-            }
+            resetVariables(); // Reset variables after successful response
 
-            if (translationType === 'speech-to-speech') {
-                // Play the translated speech
-                const translatedAudioBlob = new Blob([result.translatedAudio], { type: 'audio/wav' });
-                const translatedAudioUrl = URL.createObjectURL(translatedAudioBlob);
-                setTranslatedAudioUrl(translatedAudioUrl);
-            }
+            setConversations((prevConversations) => [
+                ...prevConversations,
+                {
+                    speaker: currentSpeaker,
+                    recognizedText: result.recognized || '',
+                    translatedText: result.translated || '',
+                    detectedLanguage: getFullLanguageName(result.detected_language || ''),
+                    translatedLanguage: getFullLanguageName(result.translated_language || 'en'),
+                    audioUrl: generateUniqueUrl(result.audio_url || '')
+                }
+            ]);
 
-            // Set detected language based on detected language
-            const lang = result.language;
-            setDetectedLanguage(lang === 'es' ? 'Spanish' : 'English');
-            // Set translated language based on detected language
-            setTranslatedLanguage(lang === 'es' ? 'English' : 'Spanish');
+            // Toggle speaker for next turn
+            setCurrentSpeaker((prevSpeaker) => (prevSpeaker === 1 ? 2 : 1));
+
+            // Auto-play the translated audio
+            if (audioElementRef.current) {
+                audioElementRef.current.src = generateUniqueUrl(result.audio_url || '');
+                audioElementRef.current.play();
+            }
         } catch (error) {
-            console.error('Error sending chunk to backend:', error);
+            console.error('Error sending audio to backend:', error);
+            resetVariables(); // Reset variables in case of an error
         } finally {
-            await resetMicrophone();
+            setTimeout(async () => {
+                await startRecordingStream();
+            }, 200);
         }
     };
 
     return (
         <ThemeProvider theme={theme}>
-            <CssBaseline />
+            <CssBaseline/>
             <AppBar position="static">
                 <Toolbar>
                     <Typography variant="h6">Audio Chunks Translator</Typography>
                 </Toolbar>
             </AppBar>
-            <Container maxWidth="md" style={{ textAlign: 'center', marginTop: '20px' }}>
+            <Container maxWidth="md" style={{textAlign: 'center', marginTop: '20px'}}>
                 <Typography variant="h4" gutterBottom>
                     Translate Audio Chunks
                 </Typography>
-                <FormControl variant="outlined" style={{ minWidth: 200, marginBottom: '20px' }}>
+                <FormControl variant="outlined" style={{minWidth: 200, marginBottom: '20px'}}>
                     <InputLabel id="target-language-label">Target Language</InputLabel>
                     <Select
                         labelId="target-language-label"
@@ -274,22 +356,17 @@ const Translate = () => {
                         <MenuItem value="English">English</MenuItem>
                     </Select>
                 </FormControl>
-                <FormControl variant="outlined" style={{ minWidth: 200, marginBottom: '20px' }}>
+                <FormControl variant="outlined" style={{minWidth: 200, marginBottom: '20px'}}>
                     <InputLabel id="translation-type-label">Translation Type</InputLabel>
-                    <Select
-                        labelId="translation-type-label"
-                        value={translationType}
-                        onChange={(e) => setTranslationType(e.target.value)}
-                        label="Translation Type"
-                    >
-                        <MenuItem value="speech-to-text">S2TT (Speech to Text translation)</MenuItem>
-                        <MenuItem value="speech-to-speech">S2ST (Speech to Speech translation)</MenuItem>
-                        <MenuItem value="text-to-text">T2TT (Text to Text translation)</MenuItem>
-                        <MenuItem value="text-to-speech">T2ST (Text to Speech translation)</MenuItem>
+                    <Select value={translationType} onChange={handleChange}>
+                        <MenuItem value="s2tt">S2TT - Speech-to-Text</MenuItem>
+                        <MenuItem value="s2st">S2ST - Speech-to-Speech</MenuItem>
+                        <MenuItem value="t2tt">T2TT - Text-to-Text</MenuItem>
+                        <MenuItem value="t2st">T2ST - Text-to-Speech</MenuItem>
                     </Select>
                 </FormControl>
-                {translationType === 'text-to-text' && (
-                    <Box component={Paper} style={{ marginTop: '20px', padding: '20px', textAlign: 'left' }}>
+                {(translationType === 't2tt' || translationType === 't2st') && (
+                    <Box component={Paper} style={{marginTop: '20px', padding: '20px', textAlign: 'left'}}>
                         <TextField
                             label="Enter Text"
                             multiline
@@ -303,36 +380,15 @@ const Translate = () => {
                             variant="contained"
                             color="primary"
                             onClick={handleTextToTranslateSubmit}
-                            style={{ marginTop: '10px' }}
+                            style={{marginTop: '10px'}}
                         >
-                            Translate Text
+                            {translationType === 't2st' ? 'Convert to Speech' : 'Translate Text'}
                         </Button>
                     </Box>
                 )}
-                {translationType === 'text-to-speech' && (
-                    <Box component={Paper} style={{ marginTop: '20px', padding: '20px', textAlign: 'left' }}>
-                        <TextField
-                            label="Enter Text"
-                            multiline
-                            rows={4}
-                            variant="outlined"
-                            fullWidth
-                            value={textToTranslateInput}
-                            onChange={(e) => setTextToTranslateInput(e.target.value)}
-                        />
-                        <Button
-                            variant="contained"
-                            color="primary"
-                            onClick={handleTextToTranslateSubmit}
-                            style={{ marginTop: '10px' }}
-                        >
-                            Convert to Speech
-                        </Button>
-                    </Box>
-                )}
-                {(translationType === 'speech-to-text' || translationType === 'speech-to-speech') && (
+                {(translationType === 's2tt' || translationType === 's2st') && (
                     <>
-                        <FormControl component="fieldset" style={{ marginBottom: '20px' }}>
+                        <FormControl component="fieldset" style={{marginBottom: '20px'}}>
                             <FormLabel component="legend">Audio Source</FormLabel>
                             <RadioGroup
                                 row
@@ -341,8 +397,8 @@ const Translate = () => {
                                 value={audioSource}
                                 onChange={(e) => setAudioSource(e.target.value)}
                             >
-                                <FormControlLabel value="file" control={<Radio />} label="File" />
-                                <FormControlLabel value="microphone" control={<Radio />} label="Microphone" />
+                                <FormControlLabel value="file" control={<Radio/>} label="File"/>
+                                <FormControlLabel value="microphone" control={<Radio/>} label="Microphone"/>
                             </RadioGroup>
                         </FormControl>
                         {audioSource === 'microphone' ? (
@@ -350,7 +406,7 @@ const Translate = () => {
                                 variant="contained"
                                 color="primary"
                                 onClick={recording ? stopRecording : startRecording}
-                                style={{ margin: '0 10px' }}
+                                style={{margin: '0 10px'}}
                             >
                                 {recording ? 'Stop Streaming' : 'Start Streaming'}
                             </Button>
@@ -359,7 +415,7 @@ const Translate = () => {
                                 component="label"
                                 variant="contained"
                                 color="primary"
-                                style={{ margin: '0 10px' }}
+                                style={{margin: '0 10px'}}
                             >
                                 Upload Audio
                                 <input
@@ -380,10 +436,10 @@ const Translate = () => {
                         )}
                     </>
                 )}
-                <Box component={Paper} style={{ marginTop: '20px', padding: '20px', textAlign: 'left' }}>
+                <Box component={Paper} style={{marginTop: '20px', padding: '20px', textAlign: 'left'}}>
                     <Typography variant="h5">Translation Results</Typography>
-                    <br />
-                    {(translationType === 'speech-to-text' || translationType === 'speech-to-speech') && (
+                    <br/>
+                    {(translationType === 's2st' || translationType === 's2tt') && (
                         <>
                             <Typography variant="body1">
                                 <strong>Recognized Text:</strong> {recognizedText}
@@ -392,15 +448,15 @@ const Translate = () => {
                                 <strong>Translated Text:</strong> {translatedText}
                             </Typography>
                             <Typography variant="body1">
-                                <strong>Detected Language:</strong> {detectedLanguage}
+                                <strong>Detected Language:</strong> {getFullLanguageName(detectedLanguage)}
                             </Typography>
                             <Typography variant="body1">
-                                <strong>Translated Language:</strong> {translatedLanguage}
+                                <strong>Translated Language:</strong> {getFullLanguageName(translatedLanguage)}
                             </Typography>
                         </>
                     )}
-                    {translationType === 'text-to-text' && (
-                        <Box style={{ marginTop: '20px', textAlign: 'center' }}>
+                    {translationType === 't2tt' && (
+                        <Box style={{marginTop: '20px', textAlign: 'center'}}>
                             <TextField
                                 label="Translated Text"
                                 multiline
@@ -414,9 +470,22 @@ const Translate = () => {
                             />
                         </Box>
                     )}
-                    {(translationType === 'speech-to-speech' || translationType === 'text-to-speech') && (
-                        <Box style={{ marginTop: '20px', textAlign: 'center', pointerEvents: translatedAudioUrl ? 'auto' : 'none', opacity: translatedAudioUrl ? 1 : 0.5 }}>
-                            <AudioPlayer ref={audioPlayerRef} />
+                    {(translationType === 's2st' || translationType === 't2st') && (
+                        <Box
+                            style={{
+                                marginTop: '20px',
+                                textAlign: 'center',
+                                pointerEvents: translatedAudioUrl ? 'auto' : 'none',
+                                opacity: translatedAudioUrl ? 1 : 0.5,
+                            }}
+                        >
+                            {
+                                sessionId && translatedAudioUrl ?
+                                    <AudioPlayer ref={audioPlayerRef} sessionId={sessionId}
+                                                 audioUrl={translatedAudioUrl}/>
+                                    :
+                                    <AudioPlayer ref={audioPlayerRef}/>
+                            }
                         </Box>
                     )}
                 </Box>
