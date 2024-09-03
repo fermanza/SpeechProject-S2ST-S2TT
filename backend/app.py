@@ -17,13 +17,13 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
 
 # Force download the model
-WhisperForConditionalGeneration.from_pretrained("openai/whisper-medium")
-WhisperProcessor.from_pretrained("openai/whisper-medium")
+WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v2")
+WhisperProcessor.from_pretrained("openai/whisper-large-v2")
 
 # Initialize models and processors
-processor = WhisperProcessor.from_pretrained("openai/whisper-medium")
+processor = WhisperProcessor.from_pretrained("openai/whisper-large-v2")
 try:
-    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-medium")
+    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v2")
 except FileNotFoundError as e:
     app.logger.error(f"Model files not found. Ensure the model is downloaded correctly: {str(e)}")
     raise e
