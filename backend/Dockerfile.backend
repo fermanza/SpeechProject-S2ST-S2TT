@@ -49,7 +49,7 @@ RUN python -m pip install --upgrade pip setuptools wheel
 # Upgrade certifi separately
 RUN pip install --upgrade certifi
 
-# Install a known compatible version of Cython
+# Install a compatible version of Cython
 RUN pip install cython==0.29.36
 
 # Copy requirements file
@@ -75,8 +75,11 @@ RUN python download_models.py
 # Copy the rest of the application source code
 COPY . .
 
+# Modify flask/app.py directly for compatibility issue (last resort if needed)
+RUN sed -i 's/url_quote/unquote/g' /usr/local/lib/python3.12/site-packages/flask/app.py
+
 # Expose the port the app runs on
 EXPOSE 5500
 
-# Command to run the application
-CMD ["python", "app.py"]
+# Command to run the application using gunicorn on port 5500
+CMD ["gunicorn", "--bind", "0.0.0.0:5500", "app:app"]
