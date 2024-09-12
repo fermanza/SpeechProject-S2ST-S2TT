@@ -38,7 +38,7 @@ def try_download_model(model_name: str, retries: int = 3, delay: int = 5) -> boo
 
 def download_models():
     primary_model = 'facebook/mbart-large-50-many-to-one-mmt'
-    fallback_model = 'Helsinki-NLP/opus-mt-en-de'  # Example fallback model
+    fallback_model = 'Helsinki-NLP/opus-mt-en-es'  # Example fallback model
 
     if try_download_model(primary_model):
         logging.info(f"Primary model {primary_model} was downloaded successfully.")

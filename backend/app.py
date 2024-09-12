@@ -37,7 +37,8 @@ os.makedirs(WAV_DIR, exist_ok=True)
 os.makedirs(SPEECH_DIR, exist_ok=True)
 
 # whisper_model_name = "openai/whisper-small"
-whisper_model_name = "openai/whisper-base"
+# whisper_model_name = "openai/whisper-base"
+whisper_model_name = "openai/whisper-tiny"
 processor = WhisperProcessor.from_pretrained(whisper_model_name)
 model = WhisperForConditionalGeneration.from_pretrained(whisper_model_name)
 
